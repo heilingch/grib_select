@@ -49,24 +49,27 @@ def load_grib_dataset(filepath: str) -> xr.Dataset:
             pass
             
         # --- 2. Pressure (Mean Sea Level) ---
-        try:
-            ds_msl = xr.open_dataset(
-                filepath, 
-                engine='cfgrib', 
-                backend_kwargs={'filter_by_keys': {'typeOfLevel': 'meanSeaLevel'}}
-            )
-            # Rename variants
-            rename_map = {}
-            if 'prmsl' in ds_msl: rename_map['prmsl'] = 'msl'
-            # GFS sometimes puts it in 'surface' with paramId, but 'meanSeaLevel' is standard GRIB2
-            
-            if rename_map:
-                ds_msl = ds_msl.rename(rename_map)
+        # Note: typeOfLevel can be 'meanSea' or 'meanSeaLevel' depending on GRIB version
+        for msl_level in ['meanSea', 'meanSeaLevel']:
+            try:
+                ds_msl = xr.open_dataset(
+                    filepath, 
+                    engine='cfgrib', 
+                    backend_kwargs={'filter_by_keys': {'typeOfLevel': msl_level}}
+                )
+                # Rename variants to standard 'msl'
+                rename_map = {}
+                if 'prmsl' in ds_msl: rename_map['prmsl'] = 'msl'
+                if 'sp' in ds_msl: rename_map['sp'] = 'msl'  # Surface pressure fallback
                 
-            if 'msl' in ds_msl:
-                datasets.append(ds_msl[['msl']])
-        except Exception:
-            pass
+                if rename_map:
+                    ds_msl = ds_msl.rename(rename_map)
+                    
+                if 'msl' in ds_msl:
+                    datasets.append(ds_msl[['msl']])
+                    break  # Found it, stop trying other level names
+            except Exception:
+                pass
             
         if not datasets:
             # Final Fallback: Try generic load (might fail with DatasetBuildError but worth a shot if filters failed)

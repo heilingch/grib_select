@@ -6,23 +6,35 @@ from ingest.grib import extract_point_data
 def calculate_errors(observed_df: pd.DataFrame, model_data: pd.DataFrame):
     """
     Calculates errors between observed and model, returns a DataFrame with error metrics.
+    Aligns model data to observed data index using reindex.
     """
-    # Merge on time (requires them to be aligned or reindexed)
-    # model_data should be same index as observed_df
+    # Reindex model data to match observed data timestamps
+    # This handles cases where indices don't perfectly align
+    model_aligned = model_data.reindex(observed_df.index, method='nearest', tolerance=pd.Timedelta('30min'))
     
     comparisons = observed_df.copy()
-    comparisons['model_wind_speed'] = model_data['wind_speed']
-    comparisons['model_wind_dir'] = model_data['wind_dir']
     
-    if 'pressure' in observed_df.columns and 'pressure' in model_data.columns:
-        comparisons['model_pressure'] = model_data['pressure']
+    # Wind
+    if 'wind_speed' in model_aligned.columns:
+        comparisons['model_wind_speed'] = model_aligned['wind_speed']
+    else:
+        comparisons['model_wind_speed'] = np.nan
+        
+    if 'wind_dir' in model_aligned.columns:
+        comparisons['model_wind_dir'] = model_aligned['wind_dir']
+    else:
+        comparisons['model_wind_dir'] = np.nan
+    
+    # Pressure - check both dataframes
+    if 'pressure' in observed_df.columns and 'pressure' in model_aligned.columns:
+        comparisons['model_pressure'] = model_aligned['pressure']
+        # Only calculate error where both have valid values
         comparisons['pressure_error'] = comparisons['model_pressure'] - comparisons['pressure']
     
-    # Calculate scalar errors
-    comparisons['ws_error'] = comparisons['model_wind_speed'] - comparisons['wind_speed'] # Bias
+    # Calculate scalar errors (handles NaN gracefully)
+    comparisons['ws_error'] = comparisons['model_wind_speed'] - comparisons['wind_speed']
     
     # Calculate Vector Error for wind
-    # Convert to U/V
     obs_u = -comparisons['wind_speed'] * np.sin(np.radians(comparisons['wind_dir']))
     obs_v = -comparisons['wind_speed'] * np.cos(np.radians(comparisons['wind_dir']))
     
@@ -53,27 +65,32 @@ def compare_model_to_observations(model_ds: xr.Dataset, observations: pd.DataFra
     # Optimization: If observations are regularly spaced, we can interp 1D in time first?
     # No, boat moves in space.
     
+    skipped = 0
     for time, row in observations.iterrows():
         lat = row[lat_col] if is_trajectory else observations.attrs.get('lat')
         lon = row[lon_col] if is_trajectory else observations.attrs.get('lon')
         
-        # Extract from GRIB
-        # Note: Time in GRIB is often 'valid_time' or 'step' + 'time'. 
-        # xarray with cfgrib usually parses this into 'time' or 'valid_time'.
+        if lat is None or lon is None or pd.isna(lat) or pd.isna(lon):
+            skipped += 1
+            continue
         
-        # We try to extract at the specific time
-        # This extract_point_data might do spatial interp. 
-        # For time, it's better to pass the timestamp.
+        # Convert time to naive UTC if needed for consistency
+        query_time = time
+        if hasattr(query_time, 'tzinfo') and query_time.tzinfo is not None:
+            query_time = query_time.tz_convert('UTC').tz_localize(None)
         
-        # Optimization: Batch extraction is better. 
-        # But let's use the simple loop for clarity first as datasets aren't huge (usually < 1000 observations).
-        
-        datum = extract_point_data(model_ds, lat, lon, time)
-        if datum:
+        datum = extract_point_data(model_ds, lat, lon, query_time)
+        if datum and ('wind_speed' in datum or 'pressure' in datum):
             datum['time'] = time
             model_results.append(datum)
+        else:
+            skipped += 1
+            
+    if skipped > 0:
+        print(f"    (Skipped {skipped} points due to missing data or invalid location)")
             
     if not model_results:
+        print("    Warning: No valid model data extracted for any observation point.")
         return pd.DataFrame()
         
     model_df = pd.DataFrame(model_results).set_index('time')

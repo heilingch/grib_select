@@ -55,23 +55,22 @@ def fetch_metar(station_id: str, hours: int = 48) -> list:
 
     try:
         # Construct IEM URL
-        # https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?station=LDSP&data=tmpf&data=dwpf&data=sknt&data=drct&data=mslp&year1=2024&month1=1...
-        # Easier: Generic CSV endpoint
-        
         url = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
+        # IEM API: day2 is exclusive, so extend to tomorrow to get today's data
+        query_end = end_time + timedelta(days=1)
         params = {
             'station': station_id,
-            'data': ['sknt', 'drct', 'mslp', 'lat', 'lon'], # Added lat, lon
+            'data': ['sknt', 'drct', 'mslp', 'alti', 'lat', 'lon'],
             'year1': start_time.year,
             'month1': start_time.month,
             'day1': start_time.day,
-            'year2': end_time.year,
-            'month2': end_time.month,
-            'day2': end_time.day,
+            'year2': query_end.year,
+            'month2': query_end.month,
+            'day2': query_end.day,
             'tz': 'Etc/UTC',
             'format': 'onlycomma',
-            'latlon': 'yes', # Ensure included
-            'missing': 'null' # Use null for missing
+            'latlon': 'yes',
+            'missing': 'null'
         }
         
         response = requests.get(url, params=params, timeout=10)
@@ -79,7 +78,6 @@ def fetch_metar(station_id: str, hours: int = 48) -> list:
         
         # Parse CSV
         from io import StringIO
-        # station,valid,lon,lat,sknt,drct,mslp
         csv_data = StringIO(response.text)
         new_df = pd.read_csv(csv_data)
         
@@ -91,12 +89,13 @@ def fetch_metar(station_id: str, hours: int = 48) -> list:
             'mslp': 'pressure'
         })
         
-        # Store lat/lon as attributes or keeping them as columns is fine if stationary.
-        # But for stationary METAR, good to have it in attrs for easy access.
-        if not new_df.empty:
-            new_df.attrs['lat'] = new_df['lat'].iloc[0]
-            new_df.attrs['lon'] = new_df['lon'].iloc[0]
-            
+        # Use 'alti' (altimeter in inches Hg) as fallback for pressure
+        # Convert: 1 inHg = 33.8639 hPa
+        if 'alti' in new_df.columns:
+            # Fill missing pressure with converted altimeter
+            alti_hpa = new_df['alti'] * 33.8639
+            new_df['pressure'] = new_df['pressure'].fillna(alti_hpa)
+        
         new_df['time'] = pd.to_datetime(new_df['time'])
         new_df = new_df.set_index('time')
         
@@ -110,6 +109,12 @@ def fetch_metar(station_id: str, hours: int = 48) -> list:
             
         # Save back to cache
         combined.reset_index().to_json(cache_file, orient='records', date_format='iso')
+        
+        # ALWAYS set lat/lon attrs from the data columns (they're preserved in the DataFrame)
+        if 'lat' in combined.columns and not combined['lat'].isna().all():
+            combined.attrs['lat'] = combined['lat'].dropna().iloc[0]
+        if 'lon' in combined.columns and not combined['lon'].isna().all():
+            combined.attrs['lon'] = combined['lon'].dropna().iloc[0]
         
         return combined
 
