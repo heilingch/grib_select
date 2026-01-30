@@ -137,3 +137,84 @@ def parse_metar_string(raw_metar: str):
         }
     except Exception as e:
         return None
+
+# --- Global Station List ---
+# In a real app we'd ship a CSV or SQLite DB.
+# For this demo, let's lazy load from IEM if not cached.
+STATION_CACHE_FILE = os.path.join(CACHE_DIR, "stations.csv")
+
+def get_station_list() -> pd.DataFrame:
+    """
+    Returns a DataFrame of global stations with 'id', 'lat', 'lon', 'name'.
+    """
+    if os.path.exists(STATION_CACHE_FILE):
+        try:
+            return pd.read_csv(STATION_CACHE_FILE)
+        except:
+            pass
+            
+    # Download from IEM
+    # https://mesonet.agron.iastate.edu/sites/networks.php
+    # They have a GEOJSON or CSV service. 
+    # Let's try to fetch a simplified list. 
+    # Actually, easy way: fetch networks for a region? No, we want global ideally.
+    # The 'metar' library has a station list but it's often old.
+    
+    # Let's try fetching a known station list or use a small hardcoded one + dynamic.
+    # PROACTIVE: Let's fetch the official IEM station list for ASOS/METAR.
+    # http://mesonet.agron.iastate.edu/geojson/network/AIRPORTS.geojson
+    # or CSV.
+    
+    url = "http://mesonet.agron.iastate.edu/sites/networks.php?network=__ALL__&format=csv"
+    # This might be huge. 
+    
+    # Fallback: Just return empty and rely on user knowing the ID, 
+    # OR define a few common ones for testing if fetch fails.
+    
+    # Let's simple use a minimal list for the demo if we can't fetch.
+    # Actually, the user asked for "automatically search airports".
+    # I will implement a fetch from a static URL that is reliable.
+    # https://raw.githubusercontent.com/datasets/airport-codes/master/data/airport-codes.csv is one option but might not match ICAO.
+    # http://ourairports.com/data/airports.csv
+    
+    try:
+        # OurAirports is a good source
+        url = "https://davidmegginson.github.io/ourairports-data/airports.csv"
+        print("Downloading station list (once)...")
+        df = pd.read_csv(url)
+        # Filter for large airports to reduce noise? type == 'large_airport' or 'medium_airport'
+        df = df[df['type'].isin(['large_airport', 'medium_airport'])]
+        # Ensure we have ICAO
+        df = df.dropna(subset=['ident'])
+        
+        # Normalize
+        out_df = pd.DataFrame({
+            'id': df['ident'], # ICAO
+            'name': df['name'],
+            'lat': df['latitude_deg'],
+            'lon': df['longitude_deg']
+        })
+        
+        out_df.to_csv(STATION_CACHE_FILE, index=False)
+        return out_df
+    except Exception as e:
+        print(f"Failed to download station list: {e}")
+        # Return fallback
+        return pd.DataFrame([
+            {'id': 'LDSP', 'name': 'Split', 'lat': 43.53, 'lon': 16.29},
+            {'id': 'EGLL', 'name': 'Heathrow', 'lat': 51.47, 'lon': -0.46},
+            {'id': 'KJFK', 'name': 'JFK', 'lat': 40.64, 'lon': -73.78},
+        ])
+
+def find_nearby_stations(lat_min, lat_max, lon_min, lon_max) -> pd.DataFrame:
+    """
+    Finds stations within the bounding box.
+    """
+    df = get_station_list()
+    if df.empty:
+        return df
+        
+    mask = (df['lat'] >= lat_min) & (df['lat'] <= lat_max) & \
+           (df['lon'] >= lon_min) & (df['lon'] <= lon_max)
+           
+    return df[mask]

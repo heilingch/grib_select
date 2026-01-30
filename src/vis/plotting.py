@@ -34,7 +34,66 @@ def plot_wind_comparison(comparisons: pd.DataFrame, model_name: str, output_path
     if output_path:
         plt.savefig(output_path)
     else:
-        plt.show() # In a generic script this might fail if no X server, but requested plots so assuming capable.
+        plt.show() 
+    plt.close()
+
+def plot_metar_data(df: pd.DataFrame, station_name: str, output_path: str = None):
+    """
+    Plots basic METAR data: Wind and Pressure.
+    """
+    if df.empty:
+        print("No data to plot.")
+        return
+        
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    
+    # Wind
+    ax1.plot(df.index, df['wind_speed'], label='Wind Speed (kts)', color='blue')
+    ax1.set_ylabel('Speed (knots)')
+    ax1.legend(loc='upper left')
+    ax1.grid(True)
+    
+    # Create twin axis for wind dir if needed, or just separate
+    # Let's keep it simple.
+    ax1.set_title(f"METAR Data: {station_name}")
+    
+    if 'pressure' in df.columns:
+        ax2.plot(df.index, df['pressure'], label='Pressure (hPa)', color='orange')
+        ax2.set_ylabel('Pressure (hPa)')
+        ax2.legend()
+        ax2.grid(True)
+        
+    if output_path:
+        plt.savefig(output_path)
+    else:
+        plt.show()
+    plt.close()
+    
+def plot_grib_data(df: pd.DataFrame, title: str, output_path: str = None):
+    """
+    Plots extracted GRIB data series.
+    """
+    if df.empty:
+        return
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    
+    ax1.plot(df.index, df['wind_speed'], label='Model Wind Speed', color='green')
+    ax1.set_ylabel('Knots')
+    ax1.set_title(f"GRIB Data: {title}")
+    ax1.legend()
+    ax1.grid(True)
+    
+    if 'pressure' in df.columns:
+        ax2.plot(df.index, df['pressure'], label='Model Pressure', color='red')
+        ax2.set_ylabel('hPa')
+        ax2.legend()
+        ax2.grid(True)
+
+    if output_path:
+        plt.savefig(output_path)
+    else:
+        plt.show()
     plt.close()
 
 def plot_model_ranking(metrics_dict: dict, output_path: str = None):

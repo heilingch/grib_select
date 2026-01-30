@@ -16,10 +16,10 @@ def calculate_errors(observed_df: pd.DataFrame, model_data: pd.DataFrame):
     
     if 'pressure' in observed_df.columns and 'pressure' in model_data.columns:
         comparisons['model_pressure'] = model_data['pressure']
+        comparisons['pressure_error'] = comparisons['model_pressure'] - comparisons['pressure']
     
     # Calculate scalar errors
     comparisons['ws_error'] = comparisons['model_wind_speed'] - comparisons['wind_speed'] # Bias
-    comparisons['pressure_error'] = comparisons['model_pressure'] - comparisons['pressure']
     
     # Calculate Vector Error for wind
     # Convert to U/V
