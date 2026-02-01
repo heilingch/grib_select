@@ -186,18 +186,38 @@ def get_station_list() -> pd.DataFrame:
         # OurAirports is a good source
         url = "https://davidmegginson.github.io/ourairports-data/airports.csv"
         print("Downloading station list (once)...")
+        # Use pandas directly which handles the download
         df = pd.read_csv(url)
-        # Filter for large airports to reduce noise? type == 'large_airport' or 'medium_airport'
-        df = df[df['type'].isin(['large_airport', 'medium_airport'])]
-        # Ensure we have ICAO
+        
+        # Filter: Include small airports as they are often useful for sailors (coastal strips)
+        # But filter out closed, heliports, seaplane base (maybe keep seaplane?)
+        # Let's keep small, medium, large.
+        df = df[df['type'].isin(['large_airport', 'medium_airport', 'small_airport'])]
+        
+        # Ensure we have ICAO code (ident)
         df = df.dropna(subset=['ident'])
+        
+        # Create a clean name: Municipality (Name) or just Name
+        def format_name(row):
+            name = row['name']
+            muni = row['municipality'] if pd.notna(row['municipality']) else ""
+            
+            # Clean up common airport suffixes for display
+            name = name.replace(" Airport", "").replace(" International", "")
+            
+            if muni and muni not in name:
+                return f"{muni} ({name})"
+            return name
+
+        df['display_name'] = df.apply(format_name, axis=1)
         
         # Normalize
         out_df = pd.DataFrame({
             'id': df['ident'], # ICAO
-            'name': df['name'],
+            'name': df['display_name'],
             'lat': df['latitude_deg'],
-            'lon': df['longitude_deg']
+            'lon': df['longitude_deg'],
+            'type': df['type'] # Useful for filtering/highlighting
         })
         
         out_df.to_csv(STATION_CACHE_FILE, index=False)
@@ -206,9 +226,9 @@ def get_station_list() -> pd.DataFrame:
         print(f"Failed to download station list: {e}")
         # Return fallback
         return pd.DataFrame([
-            {'id': 'LDSP', 'name': 'Split', 'lat': 43.53, 'lon': 16.29},
-            {'id': 'EGLL', 'name': 'Heathrow', 'lat': 51.47, 'lon': -0.46},
-            {'id': 'KJFK', 'name': 'JFK', 'lat': 40.64, 'lon': -73.78},
+            {'id': 'LDSP', 'name': 'Split (Kastela)', 'lat': 43.53, 'lon': 16.30, 'type': 'medium_airport'},
+            {'id': 'LDZD', 'name': 'Zadar (Zemunik)', 'lat': 44.10, 'lon': 15.34, 'type': 'medium_airport'},
+            {'id': 'LDDU', 'name': 'Dubrovnik (Cilipi)', 'lat': 42.56, 'lon': 18.26, 'type': 'medium_airport'},
         ])
 
 def find_nearby_stations(lat_min, lat_max, lon_min, lon_max) -> pd.DataFrame:

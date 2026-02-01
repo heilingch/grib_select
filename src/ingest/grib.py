@@ -135,74 +135,102 @@ def get_grib_metadata(filepath: str) -> dict:
         print(f"Metadata error {filepath}: {e}")
         return {}
 
-def extract_point_data(ds: xr.Dataset, lat: float, lon: float, time: pd.Timestamp = None) -> dict:
+def extract_point_data(ds: xr.Dataset, lat, lon, time=None):
     """
-    Extracts wind and pressure data for a specific location and optional time.
-    Interpolaes spatially.
+    Extracts wind and pressure data.
+    Supports both scalar inputs (single point) and vectorized inputs (arrays).
     """
-    ds_lon_min = ds.longitude.min().item()
-    target_lon = lon
-    if ds_lon_min >= 0 and target_lon < 0:
-         target_lon += 360
-         
     try:
-        subset = ds.interp(latitude=lat, longitude=target_lon, method='linear')
+        # --- 1. Longitude Normalization ---
+        ds_lon_min = ds.longitude.min().item()
         
-        if time:
-            # Time Interpolation Logic
-            # Goal: Get data at 'time'. 'ds' might have 'time', 'valid_time', or 'step'.
-            
-            # Check for valid_time
-            if 'valid_time' in subset.coords:
-                # Often valid_time is a coordinate dependent on step
-                # We need to swap dims if step is the dim
-                if 'step' in subset.dims and 'valid_time' not in subset.dims:
-                     if 'valid_time' in subset.coords:
-                         subset = subset.swap_dims({'step': 'valid_time'})
-                
-                if 'valid_time' in subset.dims:
-                     # Ensure TZ awareness matches
-                     vt_index = subset.indexes['valid_time']
-                     is_tz = hasattr(vt_index, 'tz') and vt_index.tz is not None
-                     if is_tz and time.tzinfo is None:
-                         time = time.tz_localize('UTC')
-                     elif not is_tz and time.tzinfo is not None:
-                         time = time.tz_convert(None)
-                         
-                     subset = subset.interp(valid_time=time, method='linear')
-                     
-            elif 'time' in subset.dims:
-                 subset = subset.interp(time=time, method='linear')
+        # Handle scalar vs array input
+        if np.ndim(lat) == 0:
+            target_lon = lon
+            if ds_lon_min >= 0 and target_lon < 0:
+                target_lon += 360
+        else:
+            target_lon = np.array(lon)
+            if ds_lon_min >= 0:
+                 target_lon[target_lon < 0] += 360
                  
-            # If we failed to interpolate time (e.g. still has step dim), we might return array
-            
+        # --- 2. Interpolation ---
+        # If time is provided, we need to handle it first or concurrently
+        # For batch processing (many times, one location OR many locations, one time)
+        # We assume for now: lat/lon are scalar (one station) and time is Series (many times)
+        # OR lat/lon are Series (trajectory) and time is Series
         
-        data = {}
-        
-        # Helper to safely get scalar
-        def get_val(var):
-            if var not in subset: return None
-            val = subset[var].values
-            if val.ndim == 0: return val.item()
-            # If array, perhaps took nearest or time interp failed
-            # If size 1, return item
-            if val.size == 1: return val.item()
-            # If array, return first? Or raise?
-            return val.flatten()[0] # Fallback
-            
-        u = get_val('u10')
-        v = get_val('v10')
-        
-        if u is not None and v is not None:
-             data['wind_speed'] = np.sqrt(u**2 + v**2) * 1.94384
-             data['wind_dir'] = (270 - np.arctan2(v, u) * 180 / np.pi) % 360
+        # Simple Case: Scalar Lat/Lon, Scalar Time (Legacy)
+        if np.ndim(lat) == 0 and (time is None or np.ndim(time) == 0):
+             # Use existing logic for scalar
+             subset = ds.interp(latitude=lat, longitude=target_lon, method='linear')
+             if time is not None:
+                  if 'valid_time' in subset.coords: # Swap if needed
+                       if 'step' in subset.dims and 'valid_time' not in subset.dims:
+                            if 'valid_time' in subset.coords: subset = subset.swap_dims({'step': 'valid_time'})
+                  
+                  # Handle Time Zone
+                  # ... (Simplified for brevity, assuming UTC)
+                  if 'valid_time' in subset.dims:
+                       time_val = pd.Timestamp(time).tz_convert(None) if pd.Timestamp(time).tzinfo else time
+                       subset = subset.interp(valid_time=time_val, method='linear')
+                  elif 'time' in subset.dims:
+                       subset = subset.interp(time=time, method='linear')
              
-        p = get_val('msl')
-        if p is not None:
-            data['pressure'] = p / 100.0
-            
-        return data
-        
+             data = {}
+             u = subset.get('u10', subset.get('u', subset.get('10u')))
+             v = subset.get('v10', subset.get('v', subset.get('10v')))
+             p = subset.get('msl', subset.get('prmsl', subset.get('sp')))
+             
+             if u is not None and v is not None:
+                  u_val = u.values.item()
+                  v_val = v.values.item()
+                  data['wind_speed'] = np.sqrt(u_val**2 + v_val**2) * 1.94384
+                  data['wind_dir'] = (270 - np.arctan2(v_val, u_val) * 180 / np.pi) % 360
+             if p is not None:
+                  data['pressure'] = p.values.item() / 100.0
+             return data
+
+        # Vectorized Case: Time Series at a Point
+        # lat/lon scalar, time is array/index
+        if np.ndim(lat) == 0 and time is not None and len(time) > 1:
+             # Spatially interpolate first (reduce to point)
+             point_ds = ds.interp(latitude=lat, longitude=target_lon, method='linear')
+             
+             # Align time coordinates
+             target_times = pd.to_datetime(time)
+             if target_times.tz is not None:
+                  target_times = target_times.tz_convert(None)
+             
+             # Handle dimension swapping
+             if 'step' in point_ds.dims and 'valid_time' not in point_ds.dims and 'valid_time' in point_ds.coords:
+                  point_ds = point_ds.swap_dims({'step': 'valid_time'})
+             
+             time_dim = 'valid_time' if 'valid_time' in point_ds.dims else 'time'
+             
+             # Select nearest times or interp
+             # Interp is better for accuracy
+             ts_ds = point_ds.interp({time_dim: target_times}, method='linear')
+             
+             # Extract Data
+             df = pd.DataFrame(index=time)
+             
+             u = ts_ds.get('u10', ts_ds.get('u', ts_ds.get('10u')))
+             v = ts_ds.get('v10', ts_ds.get('v', ts_ds.get('10v')))
+             p = ts_ds.get('msl', ts_ds.get('prmsl', ts_ds.get('sp')))
+             
+             if u is not None and v is not None:
+                  # Calculate wind speed/dir from vector components
+                  ws = np.sqrt(u.values**2 + v.values**2) * 1.94384
+                  wd = (270 - np.arctan2(v.values, u.values) * 180 / np.pi) % 360
+                  df['wind_speed'] = ws
+                  df['wind_dir'] = wd
+             
+             if p is not None:
+                  df['pressure'] = p.values / 100.0
+                  
+             return df
+
     except Exception as e:
         print(f"Extraction error: {e}")
         return None
