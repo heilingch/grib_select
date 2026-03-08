@@ -371,48 +371,73 @@ class GribSelectorSession:
                 obs_name = obs_dropdown.value
                 time_mode = time_dropdown.value
                 model_data = self.comparisons.get(obs_name, {})
-                
+
                 if not model_data:
                     print("No model data for this observation.")
                     return
-                    
+
                 obs_df = self.observations[obs_name]
-                
+
+                # === Derive the GRIB time range from self.models (xarray datasets) ===
+                # NOTE: self.comparisons[obs][model] is indexed by *observation* timestamps
+                #       (calculate_errors reindexes model onto obs).
+                #       We must NOT use those to determine the GRIB window.
+                def _get_model_time_range():
+                    """Return (grib_start, grib_end) from the actual xarray datasets."""
+                    all_times = []
+                    for ds in self.models.values():
+                        try:
+                            if 'valid_time' in ds.coords:
+                                t = pd.to_datetime(ds.valid_time.values).to_list()
+                            elif 'time' in ds.coords:
+                                t = pd.to_datetime(ds.time.values).to_list()
+                            else:
+                                continue
+                            all_times.extend(t)
+                        except Exception:
+                            pass
+                    if not all_times:
+                        return None, None
+                    all_times = pd.DatetimeIndex(all_times)
+                    return all_times.min(), all_times.max()
+
+                def _tz_safe_truncate(df, before, after):
+                    """Truncate a DataFrame's datetime index, handling tz-aware/naive mismatch."""
+                    if df.empty or (before is None and after is None):
+                        return df
+                    idx_tz = df.index.tz
+                    def _coerce(ts):
+                        if ts is None:
+                            return None
+                        ts = pd.Timestamp(ts)
+                        if idx_tz is None:
+                            return ts.tz_localize(None) if ts.tzinfo is not None else ts
+                        else:
+                            return ts.tz_convert(idx_tz) if ts.tzinfo is not None else ts.tz_localize(idx_tz)
+                    return df.truncate(before=_coerce(before), after=_coerce(after))
+
                 start_time = None
                 end_time = None
-                
-                if time_mode == 'Auto (GRIB Range)':
-                    all_times = pd.Index([])
-                    for df in model_data.values():
-                        all_times = all_times.union(df.index)
-                    if not all_times.empty:
-                        start_time = all_times.min() - pd.Timedelta(hours=6)
-                        end_time = all_times.max() + pd.Timedelta(hours=6)
-                elif time_mode != 'All Data':
-                    # Parse hours from e.g. 'Past 24h + Forecast'
-                    hours = int(time_mode.split(' ')[1].replace('h', ''))
-                    
-                    # Anchor "now" to the start of the model data (or latest observation)
-                    model_times = pd.Index([])
-                    for df in model_data.values():
-                        model_times = model_times.union(df.index)
-                        
-                    if not model_times.empty:
-                        base_time = model_times.min()
-                        end_time = model_times.max() + pd.Timedelta(hours=6)
-                    elif not obs_df.empty:
-                        base_time = obs_df.index.max()
-                        end_time = None
-                    else:
-                        base_time = pd.Timestamp.now()
-                        end_time = None
-                        
-                    start_time = base_time - pd.Timedelta(hours=hours)
 
-                plot_obs_df = obs_df
-                plot_model_data = model_data
-                
-                plot_multi_model_comparison(plot_obs_df, plot_model_data, obs_name, start_time=start_time, end_time=end_time)
+                grib_start, grib_end = _get_model_time_range()
+
+                if time_mode == 'Auto (GRIB Range)':
+                    if grib_start is not None:
+                        start_time = grib_start - pd.Timedelta(hours=6)
+                        end_time   = grib_end   + pd.Timedelta(hours=6)
+                elif time_mode != 'All Data':
+                    hours = int(time_mode.split(' ')[1].replace('h', ''))
+                    base = grib_start if grib_start is not None else obs_df.index.max() if not obs_df.empty else pd.Timestamp.now(tz='UTC')
+                    start_time = base - pd.Timedelta(hours=hours)
+                    end_time   = (grib_end + pd.Timedelta(hours=6)) if grib_end is not None else None
+
+                plot_obs_df = _tz_safe_truncate(obs_df.copy(), start_time, end_time)
+                plot_model_data = {
+                    m: _tz_safe_truncate(df.copy(), start_time, end_time)
+                    for m, df in model_data.items()
+                }
+
+                plot_multi_model_comparison(plot_obs_df, plot_model_data, obs_name)
                 plt.show()
 
         def on_change(change):
