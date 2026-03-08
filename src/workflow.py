@@ -412,30 +412,7 @@ class GribSelectorSession:
                 plot_obs_df = obs_df
                 plot_model_data = model_data
                 
-                if start_time is not None or end_time is not None:
-                    # Robust slicing using boolean masks (handles duplicate/unsorted indices)
-                    if not plot_obs_df.empty:
-                        mask = pd.Series(True, index=plot_obs_df.index)
-                        if start_time is not None:
-                            mask = mask & (plot_obs_df.index >= start_time)
-                        if end_time is not None:
-                            mask = mask & (plot_obs_df.index <= end_time)
-                        plot_obs_df = plot_obs_df[mask]
-                        
-                    sliced_model_data = {}
-                    for m, df in model_data.items():
-                        if not df.empty:
-                            mask = pd.Series(True, index=df.index)
-                            if start_time is not None:
-                                mask = mask & (df.index >= start_time)
-                            if end_time is not None:
-                                mask = mask & (df.index <= end_time)
-                            sliced_model_data[m] = df[mask]
-                        else:
-                            sliced_model_data[m] = df
-                    plot_model_data = sliced_model_data
-
-                plot_multi_model_comparison(plot_obs_df, plot_model_data, obs_name)
+                plot_multi_model_comparison(plot_obs_df, plot_model_data, obs_name, start_time=start_time, end_time=end_time)
                 plt.show()
 
         def on_change(change):

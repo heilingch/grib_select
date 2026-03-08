@@ -10,7 +10,7 @@ def apply_style(ax):
     display(fig)
     plt.close()
 
-def plot_multi_model_comparison(obs_df: pd.DataFrame, model_data_dict: dict, obs_name: str, output_path: str = None):
+def plot_multi_model_comparison(obs_df: pd.DataFrame, model_data_dict: dict, obs_name: str, output_path: str = None, start_time=None, end_time=None):
     """
     Plots Observed data vs Multiple Models.
     model_data_dict: { 'ModelName': comparison_df, ... }
@@ -73,8 +73,7 @@ def plot_multi_model_comparison(obs_df: pd.DataFrame, model_data_dict: dict, obs
 
     
     # --- Zoom / Limits ---
-    # Set x-limits to encompass all valid data
-    # Union of indices
+    # Union of indices to find absolute max limits if no bounds are specified
     all_indices = [obs_df.index] + [df.index for df in model_data_dict.values()]
     if all_indices:
         combined_index = pd.Index([])
@@ -82,7 +81,16 @@ def plot_multi_model_comparison(obs_df: pd.DataFrame, model_data_dict: dict, obs
             combined_index = combined_index.union(idx)
             
         if not combined_index.empty:
-            ax3.set_xlim(combined_index.min(), combined_index.max())
+            lim_start = combined_index.min()
+            lim_end = combined_index.max()
+            
+            # Clamp limits if user requested a timeframe
+            if start_time is not None:
+                lim_start = start_time
+            if end_time is not None:
+                lim_end = end_time
+                
+            ax3.set_xlim(lim_start, lim_end)
 
     plt.tight_layout()
     
