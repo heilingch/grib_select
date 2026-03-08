@@ -3,7 +3,7 @@ import xarray as xr
 import numpy as np
 import os
 import matplotlib.pyplot as plt
-from ipywidgets import interact, Dropdown, Output, VBox
+from ipywidgets import interact, Dropdown, Output, VBox, HBox
 from IPython.display import display, clear_output
 import warnings
 from datetime import datetime
@@ -358,35 +358,97 @@ class GribSelectorSession:
 
         # Keys are Observation names now
         obs_names = list(self.comparisons.keys())
-        dropdown = Dropdown(options=obs_names, description='Observation:', layout={'width': '300px'})
+        obs_dropdown = Dropdown(options=obs_names, description='Observation:', layout={'width': '300px'})
+        
+        time_options = ['Auto (GRIB Range)', 'All Data', 'Past 12h + Forecast', 'Past 24h + Forecast', 'Past 48h + Forecast']
+        time_dropdown = Dropdown(options=time_options, value='Auto (GRIB Range)', description='Timeframe:', layout={'width': '300px'})
+        
         out = Output()
+
+        def update_plot():
+            with out:
+                clear_output(wait=True)
+                obs_name = obs_dropdown.value
+                time_mode = time_dropdown.value
+                model_data = self.comparisons.get(obs_name, {})
+                
+                if not model_data:
+                    print("No model data for this observation.")
+                    return
+                    
+                obs_df = self.observations[obs_name]
+                
+                start_time = None
+                end_time = None
+                
+                if time_mode == 'Auto (GRIB Range)':
+                    all_times = pd.Index([])
+                    for df in model_data.values():
+                        all_times = all_times.union(df.index)
+                    if not all_times.empty:
+                        start_time = all_times.min() - pd.Timedelta(hours=6)
+                        end_time = all_times.max() + pd.Timedelta(hours=6)
+                elif time_mode != 'All Data':
+                    # Parse hours from e.g. 'Past 24h + Forecast'
+                    hours = int(time_mode.split(' ')[1].replace('h', ''))
+                    
+                    # Anchor "now" to the start of the model data (or latest observation)
+                    model_times = pd.Index([])
+                    for df in model_data.values():
+                        model_times = model_times.union(df.index)
+                        
+                    if not model_times.empty:
+                        base_time = model_times.min()
+                        end_time = model_times.max() + pd.Timedelta(hours=6)
+                    elif not obs_df.empty:
+                        base_time = obs_df.index.max()
+                        end_time = None
+                    else:
+                        base_time = pd.Timestamp.now()
+                        end_time = None
+                        
+                    start_time = base_time - pd.Timedelta(hours=hours)
+
+                plot_obs_df = obs_df
+                plot_model_data = model_data
+                
+                if start_time is not None or end_time is not None:
+                    # Robust slicing using boolean masks (handles duplicate/unsorted indices)
+                    if not plot_obs_df.empty:
+                        mask = pd.Series(True, index=plot_obs_df.index)
+                        if start_time is not None:
+                            mask = mask & (plot_obs_df.index >= start_time)
+                        if end_time is not None:
+                            mask = mask & (plot_obs_df.index <= end_time)
+                        plot_obs_df = plot_obs_df[mask]
+                        
+                    sliced_model_data = {}
+                    for m, df in model_data.items():
+                        if not df.empty:
+                            mask = pd.Series(True, index=df.index)
+                            if start_time is not None:
+                                mask = mask & (df.index >= start_time)
+                            if end_time is not None:
+                                mask = mask & (df.index <= end_time)
+                            sliced_model_data[m] = df[mask]
+                        else:
+                            sliced_model_data[m] = df
+                    plot_model_data = sliced_model_data
+
+                plot_multi_model_comparison(plot_obs_df, plot_model_data, obs_name)
+                plt.show()
 
         def on_change(change):
             if change['type'] == 'change' and change['name'] == 'value':
-                with out:
-                    clear_output(wait=True)
-                    obs_name = change['new']
-                    model_data = self.comparisons.get(obs_name, {})
-                    
-                    if not model_data:
-                        print("No model data for this observation.")
-                        return
-                        
-                    obs_df = self.observations[obs_name]
-                    plot_multi_model_comparison(obs_df, model_data, obs_name)
-                    plt.show()
+                update_plot()
 
-        dropdown.observe(on_change)
+        obs_dropdown.observe(on_change)
+        time_dropdown.observe(on_change)
         
         # Initial Plot
-        with out:
-            k = obs_names[0]
-            model_data = self.comparisons.get(k, {})
-            obs_df = self.observations[k]
-            plot_multi_model_comparison(obs_df, model_data, k)
-            plt.show()
+        update_plot()
             
-        return VBox([dropdown, out])
+        return VBox([HBox([obs_dropdown, time_dropdown]), out])
 
     def save_plots(self, output_dir="output"):
         """
